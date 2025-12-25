@@ -7,8 +7,8 @@ from types import ModuleType
 _subscribers: dict[str, list[Callable]] = {}
 
 
-class PubSub(ModuleType):
-    """Publish-subscribe system with hierarchical namespaces."""
+class Broker(ModuleType):
+    """Message broker system with hierarchical namespaces."""
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
@@ -79,7 +79,7 @@ class PubSub(ModuleType):
 
 
 # This is here to protect the _subscribers dict, creating a protective closure.
-custom_module = PubSub(sys.modules[__name__].__name__)
+custom_module = Broker(sys.modules[__name__].__name__)
 sys.modules[__name__] = custom_module
 
 
