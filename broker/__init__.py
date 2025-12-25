@@ -1,14 +1,16 @@
 import sys
 import inspect
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 from typing import Callable
 from typing import Union
 from typing import Optional
+from typing import Coroutine
 from types import ModuleType
 
 
-CALLBACK = Callable[..., Any]
+CALLBACK = Union[Callable[..., Any], Callable[..., Coroutine[Any, Any, Any]]]
 """
 The callback end point that event info is forwarded to. These are the actions
 that 'subscribe' and will execute when an event is triggered. Can be sync or
@@ -25,6 +27,7 @@ class Subscriber(object):
 
     callback: CALLBACK
     priority: int
+    is_async: bool
 
 
 _SUBSCRIBERS: dict[str, list[Subscriber]] = {}
@@ -59,29 +62,29 @@ class Broker(ModuleType):
             callback (CALLBACK): The callback function to inspect.
 
         Returns:
-            Union[set[str], None]: Set of parameter names, or None if callback accepts **kwargs.
+            Union[set[str], None]: Set of parameter names, or None if callback
+                accepts **kwargs.
         """
         sig = inspect.signature(callback)
 
-        # If the function has **kwargs, it accepts any arguments
+        # **kwargs is not tracked
         for param in sig.parameters.values():
             if param.kind == inspect.Parameter.VAR_KEYWORD:
                 return None
 
-        # Return set of parameter names (excluding *args)
         return {
             name
             for name, param in sig.parameters.items()
-            if param.kind != inspect.Parameter.VAR_POSITIONAL
+            if param.kind != inspect.Parameter.VAR_POSITIONAL  # exclude *args
         }
 
     @staticmethod
     def _get_matching_namespaces(namespace: str) -> list[str]:
-        """Get all namespaces that would match the given namespace.
+        """
+        Get all namespaces that would match the given namespace.
 
         Args:
             namespace (str): The namespace to find matches for.
-
         Returns:
             list[str]: List of matching namespace patterns.
         """
@@ -104,18 +107,20 @@ class Broker(ModuleType):
     def register_subscriber(
         namespace: str, callback: CALLBACK, priority: int = 0
     ) -> None:
-        """
-        Register a callback function to a namespace.
+        """Register a callback function to a namespace.
 
         Args:
-            namespace (str): Event namespace (e.g., 'system.io.file_open' or 'system.*').
-            callback (CALLBACK): Function to call when events are emitted.
+            namespace (str): Event namespace
+                (e.g., 'system.io.file_open' or 'system.*').
+            callback (CALLBACK): Function to call when events are emitted. Can
+                be sync or async.
             priority (int): The priority used for callback execution order.
                 Higher priorities are ran before lower priorities.
         Raises:
             ValueError: If callback signature doesn't match existing subscribers.
         """
         callback_params = Broker._get_callback_params(callback)
+        is_async = asyncio.iscoroutinefunction(callback)
 
         # If this is the first subscriber for this namespace, store signature
         if namespace not in _NAMESPACE_SIGNATURES:
@@ -135,7 +140,7 @@ class Broker(ModuleType):
 
         if namespace not in _SUBSCRIBERS:
             _SUBSCRIBERS[namespace] = []
-        _SUBSCRIBERS[namespace].append(Subscriber(callback, priority))
+        _SUBSCRIBERS[namespace].append(Subscriber(callback, priority, is_async))
 
     @staticmethod
     def unregister_subscriber(namespace: str, callback: CALLBACK) -> None:
@@ -156,13 +161,14 @@ class Broker(ModuleType):
                 if namespace in _NAMESPACE_SIGNATURES:
                     del _NAMESPACE_SIGNATURES[namespace]
 
-    def emit(self, namespace: str, **kwargs: Any) -> None:
+    @staticmethod
+    def _validate_emit_args(namespace: str, kwargs: dict[str, Any]) -> None:
         """
-        Emit an event to all matching subscribers.
+        Validate that emit arguments match subscriber signatures.
 
         Args:
-            namespace (str): Event namespace (e.g., 'system.io.file_open').
-            **kwargs (Any): Arguments to pass to subscriber callbacks.
+            namespace (str): The namespace being emitted to.
+            kwargs (dict[str, Any]): The keyword arguments being emitted.
         Raises:
             ValueError: If provided kwargs don't match subscriber signatures.
         """
@@ -170,7 +176,7 @@ class Broker(ModuleType):
 
         matching_namespaces = []
         for sub_namespace in _SUBSCRIBERS.keys():
-            if self._matches(namespace, sub_namespace):
+            if Broker._matches(namespace, sub_namespace):
                 matching_namespaces.append(sub_namespace)
 
         for sub_namespace in matching_namespaces:
@@ -186,14 +192,56 @@ class Broker(ModuleType):
                     f"but got: {sorted(provided_args)}"
                 )
 
+    def emit(self, namespace: str, **kwargs: Any) -> None:
+        """Emit an event to all matching synchronous subscribers.
+
+        Args:
+            namespace (str): Event namespace (e.g., 'system.io.file_open').
+            **kwargs (Any): Arguments to pass to subscriber callbacks.
+
+        Raises:
+            ValueError: If provided kwargs don't match subscriber signatures.
+
+        Note:
+            This method only calls synchronous callbacks. Async callbacks are skipped.
+            Use emit_async() to call async callbacks.
+        """
+        self._validate_emit_args(namespace, kwargs)
+
         for sub_namespace, subscribers in _SUBSCRIBERS.items():
             if self._matches(namespace, sub_namespace):
-                # Sort by priority (higher priority first)
                 sorted_subscribers = sorted(
                     subscribers, key=lambda s: s.priority, reverse=True
                 )
                 for subscriber in sorted_subscribers:
-                    subscriber.callback(**kwargs)
+                    if not subscriber.is_async:  # Only call sync callbacks
+                        subscriber.callback(**kwargs)
+
+    async def emit_async(self, namespace: str, **kwargs: Any) -> None:
+        """
+        Emit an event to all matching subscribers (both sync and async).
+
+        Args:
+            namespace (str): Event namespace (e.g., 'system.io.file_open').
+            **kwargs (Any): Arguments to pass to subscriber callbacks.
+        Raises:
+            ValueError: If provided kwargs don't match subscriber signatures.
+        Note:
+            This method calls both sync and async callbacks. Sync callbacks are
+            executed normally, async callbacks are awaited.
+        """
+        self._validate_emit_args(namespace, kwargs)
+
+        for sub_namespace, subscribers in _SUBSCRIBERS.items():
+            if self._matches(namespace, sub_namespace):
+                sorted_subscribers = sorted(
+                    subscribers, key=lambda s: s.priority, reverse=True
+                )
+                for subscriber in sorted_subscribers:
+                    if subscriber.is_async:
+                        await subscriber.callback(**kwargs)
+                    else:
+                        subscriber.callback(**kwargs)
 
     @staticmethod
     def _matches(event_namespace: str, subscriber_namespace: str) -> bool:
@@ -250,5 +298,11 @@ def unregister_subscriber(namespace: str, callback: CALLBACK) -> None:
 
 # noinspection PyUnusedLocal
 def emit(namespace: str, **kwargs: Any) -> None:
+    """See docstring above..."""
+    pass
+
+
+# noinspection PyUnusedLocal
+async def emit_async(namespace: str, **kwargs: Any) -> None:
     """See docstring above..."""
     pass
