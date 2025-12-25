@@ -390,4 +390,4 @@ async def emit_async(namespace: str, **kwargs: Any) -> None:
 
 # noinspection PyUnusedLocal
 def subscribe(namespace: str, priority: int = 0) -> CALLBACK:
-    """See docstring above..."""
+    """See docstring for subscribe_ above..."""
