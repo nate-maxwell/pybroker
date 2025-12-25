@@ -1,7 +1,7 @@
 import sys
+from dataclasses import dataclass
 from typing import Any
 from typing import Callable
-from typing import NamedTuple
 from types import ModuleType
 
 
@@ -16,7 +16,8 @@ If you want data back, create an event going the opposite direction.
 """
 
 
-class Subscriber(NamedTuple):
+@dataclass(frozen=True)
+class Subscriber(object):
     """A subscriber with a callback and priority."""
 
     callback: CALLBACK
