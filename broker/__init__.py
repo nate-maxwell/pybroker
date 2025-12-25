@@ -1,22 +1,30 @@
 import sys
 from typing import Any
 from typing import Callable
+from typing import NamedTuple
 from types import ModuleType
 
 
-CALLBACK = Callable[[Any], None]
+CALLBACK = Callable[..., Any]
 """
 The callback end point that event info is forwarded to. These are the actions
 that 'subscribe' and will execute when an event is triggered. Can be sync or
 async.
 
-Callbacks should return None as the broker cannot determine which value to
-send back to the caller. If you want data back, create an event going the
-opposite direction.
+The broker cannot determine which value to send back to the caller.
+If you want data back, create an event going the opposite direction.
 """
 
-_SUBSCRIBERS: dict[str, list[CALLBACK]] = {}
-"""The broker's record of each namespace to callback.
+
+class Subscriber(NamedTuple):
+    """A subscriber with a callback and priority."""
+
+    callback: CALLBACK
+    priority: int
+
+
+_SUBSCRIBERS: dict[str, list[Subscriber]] = {}
+"""The broker's record of each namespace to subscribers.
 
 This is kept outside of the replaced module class to create a protected
 closure around the event topic:subscriber structure.
@@ -34,7 +42,9 @@ class Broker(ModuleType):
         _SUBSCRIBERS.clear()
 
     @staticmethod
-    def register_subscriber(namespace: str, callback: CALLBACK) -> None:
+    def register_subscriber(
+        namespace: str, callback: CALLBACK, priority: int = 0
+    ) -> None:
         """
         Register a callback function to a namespace.
 
@@ -42,10 +52,12 @@ class Broker(ModuleType):
             namespace (str): Event namespace (e.g., 'system.io.file_open' or
                 'system.*').
             callback (Callable): Function to call when events are emitted.
+            priority (int): The priority used for callback execution order.
+                Higher priorities are ran before lower priorities.
         """
         if namespace not in _SUBSCRIBERS:
             _SUBSCRIBERS[namespace] = []
-        _SUBSCRIBERS[namespace].append(callback)
+        _SUBSCRIBERS[namespace].append(Subscriber(callback, priority))
 
     @staticmethod
     def unregister_subscriber(namespace: str, callback: CALLBACK) -> None:
@@ -57,7 +69,9 @@ class Broker(ModuleType):
             callback (Callable): Function to remove.
         """
         if namespace in _SUBSCRIBERS:
-            _SUBSCRIBERS[namespace].remove(callback)
+            _SUBSCRIBERS[namespace] = [
+                sub for sub in _SUBSCRIBERS[namespace] if sub.callback != callback
+            ]
             if not _SUBSCRIBERS[namespace]:
                 del _SUBSCRIBERS[namespace]
 
@@ -69,10 +83,14 @@ class Broker(ModuleType):
             namespace (str): Event namespace (e.g., 'system.io.file_open').
             **kwargs: Arguments to pass to subscriber callbacks.
         """
-        for sub_namespace, callbacks in _SUBSCRIBERS.items():
+        for sub_namespace, subscribers in _SUBSCRIBERS.items():
             if self._matches(namespace, sub_namespace):
-                for callback in callbacks:
-                    callback(**kwargs)
+                # Sort by priority (higher priority first)
+                sorted_subscribers = sorted(
+                    subscribers, key=lambda s: s.priority, reverse=True
+                )
+                for subscriber in sorted_subscribers:
+                    subscriber.callback(**kwargs)
 
     @staticmethod
     def _matches(event_namespace: str, subscriber_namespace: str) -> bool:
@@ -111,8 +129,13 @@ sys.modules[__name__] = custom_module
 # -----------------------------------------------------------------------------
 
 
+def clear() -> None:
+    """See docstring above..."""
+    pass
+
+
 # noinspection PyUnusedLocal
-def register_subscriber(namespace: str, callback: CALLBACK) -> None:
+def register_subscriber(namespace: str, callback: CALLBACK, priority: int = 0) -> None:
     """See docstring above..."""
     pass
 
