@@ -1,3 +1,3 @@
-# Py Broker
+# Broker
 
-A simple message broker system.
+A simple message broker system for python.
