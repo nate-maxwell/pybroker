@@ -4,7 +4,23 @@ from typing import Callable
 from types import ModuleType
 
 
-_subscribers: dict[str, list[Callable]] = {}
+CALLBACK = Callable[[Any], None]
+"""
+The callback end point that event info is forwarded to. These are the actions
+that 'subscribe' and will execute when an event is triggered. Can be sync or
+async.
+
+Callbacks should return None as the broker cannot determine which value to
+send back to the caller. If you want data back, create an event going the
+opposite direction.
+"""
+
+_SUBSCRIBERS: dict[str, list[CALLBACK]] = {}
+"""The broker's record of each namespace to callback.
+
+This is kept outside of the replaced module class to create a protected
+closure around the event topic:subscriber structure.
+"""
 
 
 class Broker(ModuleType):
@@ -14,7 +30,11 @@ class Broker(ModuleType):
         super().__init__(name)
 
     @staticmethod
-    def register_subscriber(namespace: str, callback: Callable) -> None:
+    def clear() -> None:
+        _SUBSCRIBERS.clear()
+
+    @staticmethod
+    def register_subscriber(namespace: str, callback: CALLBACK) -> None:
         """
         Register a callback function to a namespace.
 
@@ -23,12 +43,12 @@ class Broker(ModuleType):
                 'system.*').
             callback (Callable): Function to call when events are emitted.
         """
-        if namespace not in _subscribers:
-            _subscribers[namespace] = []
-        _subscribers[namespace].append(callback)
+        if namespace not in _SUBSCRIBERS:
+            _SUBSCRIBERS[namespace] = []
+        _SUBSCRIBERS[namespace].append(callback)
 
     @staticmethod
-    def unregister_subscriber(namespace: str, callback: Callable) -> None:
+    def unregister_subscriber(namespace: str, callback: CALLBACK) -> None:
         """
         Remove a callback from a namespace.
 
@@ -36,10 +56,10 @@ class Broker(ModuleType):
             namespace (str): Event namespace.
             callback (Callable): Function to remove.
         """
-        if namespace in _subscribers:
-            _subscribers[namespace].remove(callback)
-            if not _subscribers[namespace]:
-                del _subscribers[namespace]
+        if namespace in _SUBSCRIBERS:
+            _SUBSCRIBERS[namespace].remove(callback)
+            if not _SUBSCRIBERS[namespace]:
+                del _SUBSCRIBERS[namespace]
 
     def emit(self, namespace: str, **kwargs: Any) -> None:
         """
@@ -49,7 +69,7 @@ class Broker(ModuleType):
             namespace (str): Event namespace (e.g., 'system.io.file_open').
             **kwargs: Arguments to pass to subscriber callbacks.
         """
-        for sub_namespace, callbacks in _subscribers.items():
+        for sub_namespace, callbacks in _SUBSCRIBERS.items():
             if self._matches(namespace, sub_namespace):
                 for callback in callbacks:
                     callback(**kwargs)
@@ -71,9 +91,9 @@ class Broker(ModuleType):
             return True
 
         # Wildcard match - subscriber wants all events under a root
-        if subscriber_namespace.endswith('.*'):
+        if subscriber_namespace.endswith(".*"):
             root = subscriber_namespace[:-2]
-            return event_namespace.startswith(root + '.')
+            return event_namespace.startswith(root + ".")
 
         return False
 
@@ -92,15 +112,18 @@ sys.modules[__name__] = custom_module
 
 
 # noinspection PyUnusedLocal
-def register_subscriber(namespace: str, callback: Callable) -> None:
+def register_subscriber(namespace: str, callback: CALLBACK) -> None:
+    """See docstring above..."""
     pass
 
 
 # noinspection PyUnusedLocal
-def unregister_subscriber(namespace: str, callback: Callable) -> None:
+def unregister_subscriber(namespace: str, callback: CALLBACK) -> None:
+    """See docstring above..."""
     pass
 
 
 # noinspection PyUnusedLocal
 def emit(namespace: str, **kwargs: Any) -> None:
+    """See docstring above..."""
     pass
