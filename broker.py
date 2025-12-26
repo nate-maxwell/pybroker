@@ -64,6 +64,15 @@ closure around the event topic:subscriber structure.
 _NAMESPACE_SIGNATURES: dict[str, Optional[set[str]]] = {}
 """Track the expected keyword arguments for each namespace."""
 
+_NOTIFY_NAMESPACE_ROOT = "broker.notify."
+BROKER_ON_SUBSCRIBER_ADDED = f"{_NOTIFY_NAMESPACE_ROOT}subscriber.added"
+BROKER_ON_SUBSCRIBER_REMOVED = f"{_NOTIFY_NAMESPACE_ROOT}subscriber.removed"
+BROKER_ON_EMIT = f"{_NOTIFY_NAMESPACE_ROOT}emit.sync"
+BROKER_ON_EMIT_ASYNC = f"{_NOTIFY_NAMESPACE_ROOT}emit.async"
+BROKER_ON_EMIT_ALL = f"{_NOTIFY_NAMESPACE_ROOT}emit.all"
+BROKER_ON_NAMESPACE_CREATED = f"{_NOTIFY_NAMESPACE_ROOT}namespace.created"
+BROKER_ON_NAMESPACE_DELETED = f"{_NOTIFY_NAMESPACE_ROOT}namespace.deleted"
+
 
 def _make_subscribe_decorator(broker_module: "Broker") -> Callable:
     """
@@ -115,10 +124,27 @@ class Broker(ModuleType):
     CALLBACK = CALLBACK
     SignatureMismatchError = SignatureMismatchError
     EmitArgumentError = EmitArgumentError
+    BROKER_ON_SUBSCRIBER_ADDED = BROKER_ON_SUBSCRIBER_ADDED
+    BROKER_ON_SUBSCRIBER_REMOVED = BROKER_ON_SUBSCRIBER_REMOVED
+    BROKER_ON_EMIT = BROKER_ON_EMIT
+    BROKER_ON_EMIT_ASYNC = BROKER_ON_EMIT_ASYNC
+    BROKER_ON_EMIT_ALL = BROKER_ON_EMIT_ALL
+    BROKER_ON_NAMESPACE_CREATED = BROKER_ON_NAMESPACE_CREATED
+    BROKER_ON_NAMESPACE_DELETED = BROKER_ON_NAMESPACE_DELETED
 
     def __init__(self, name: str) -> None:
         super().__init__(name)
         self.subscribe = _make_subscribe_decorator(self)
+
+        # -----Notifies-----
+        self.notify_on_all: bool = False
+        self.notify_on_subscribe: bool = False
+        self.notify_on_unsubscribe: bool = False
+        self.notify_on_emit: bool = False
+        self.notify_on_emit_async: bool = False
+        self.notify_on_emit_all: bool = False
+        self.notify_on_new_namespace: bool = False
+        self.notify_on_del_namespace: bool = False
 
     @staticmethod
     def clear() -> None:
@@ -149,34 +175,8 @@ class Broker(ModuleType):
             if param.kind != inspect.Parameter.VAR_POSITIONAL  # exclude *args
         }
 
-    @staticmethod
-    def _get_matching_namespaces(namespace: str) -> list[str]:
-        """
-        Get all namespaces that would match the given namespace.
-
-        Args:
-            namespace (str): The namespace to find matches for.
-        Returns:
-            list[str]: List of matching namespace patterns.
-        """
-        matching = []
-
-        # Check exact match
-        if namespace in _NAMESPACE_SIGNATURES:
-            matching.append(namespace)
-
-        # Check wildcard matches
-        parts = namespace.split(".")
-        for i in range(len(parts)):
-            wildcard = ".".join(parts[: i + 1]) + ".*"
-            if wildcard in _NAMESPACE_SIGNATURES:
-                matching.append(wildcard)
-
-        return matching
-
-    @staticmethod
     def register_subscriber(
-        namespace: str, callback: CALLBACK, priority: int = 0
+        self, namespace: str, callback: CALLBACK, priority: int = 0
     ) -> None:
         """Register a callback function to a namespace.
 
@@ -190,6 +190,9 @@ class Broker(ModuleType):
         Raises:
             SignatureMismatchError: If callback signature doesn't match
                 existing subscribers.
+        Notes:
+            Emits a notify event when a namespace is created and when a
+            subscriber is registered. Notify emits the used namespace.
         """
         callback_params = Broker._get_callback_params(callback)
         is_async = asyncio.iscoroutinefunction(callback)
@@ -212,26 +215,53 @@ class Broker(ModuleType):
 
         if namespace not in _SUBSCRIBERS:
             _SUBSCRIBERS[namespace] = []
-        _SUBSCRIBERS[namespace].append(Subscriber(callback, priority, is_async))
+            if (
+                not namespace.startswith(_NOTIFY_NAMESPACE_ROOT)
+                and self.notify_on_new_namespace
+            ):
+                self.emit(namespace=BROKER_ON_NAMESPACE_CREATED, using=namespace)
 
-    @staticmethod
-    def unregister_subscriber(namespace: str, callback: CALLBACK) -> None:
+        _SUBSCRIBERS[namespace].append(Subscriber(callback, priority, is_async))
+        if (
+            not namespace.startswith(_NOTIFY_NAMESPACE_ROOT)
+            and self.notify_on_subscribe
+        ):
+            self.emit(namespace=BROKER_ON_SUBSCRIBER_ADDED, using=namespace)
+
+    def unregister_subscriber(self, namespace: str, callback: CALLBACK) -> None:
         """
         Remove a callback from a namespace.
 
         Args:
             namespace (str): Event namespace.
             callback (CALLBACK): Function to remove.
+        Notes:
+            Emits a notify event when subscriber is unregistered and when a
+            namespace is removed from consolidation. Notify emits the used
+            namespace.
         """
         if namespace in _SUBSCRIBERS:
             _SUBSCRIBERS[namespace] = [
                 sub for sub in _SUBSCRIBERS[namespace] if sub.callback != callback
             ]
+            if (
+                not namespace.startswith(_NOTIFY_NAMESPACE_ROOT)
+                and self.notify_on_unsubscribe
+            ):
+                self.emit(namespace=BROKER_ON_SUBSCRIBER_REMOVED, using=namespace)
+
             if not _SUBSCRIBERS[namespace]:
                 del _SUBSCRIBERS[namespace]
+
                 # Clean up signature tracking if no subscribers left
                 if namespace in _NAMESPACE_SIGNATURES:
                     del _NAMESPACE_SIGNATURES[namespace]
+
+                if (
+                    not namespace.startswith(_NOTIFY_NAMESPACE_ROOT)
+                    and self.notify_on_del_namespace
+                ):
+                    self.emit(namespace=BROKER_ON_NAMESPACE_DELETED, using=namespace)
 
     @staticmethod
     def _validate_emit_args(namespace: str, kwargs: dict[str, Any]) -> None:
@@ -280,8 +310,10 @@ class Broker(ModuleType):
         Raises:
             EmitArgumentError: If provided kwargs don't match subscriber signatures.
         Note:
-            This method only calls synchronous callbacks. Async callbacks are
+            -This method only calls synchronous callbacks. Async callbacks are
             skipped. Use emit_async() to call async callbacks.
+            -Emits a notify event after args have been sent to subscribers.
+            Notify emits the used namespace.
         """
         self._validate_emit_args(namespace, kwargs)
 
@@ -293,6 +325,11 @@ class Broker(ModuleType):
                 for subscriber in sorted_subscribers:
                     if not subscriber.is_async:  # Only call sync callbacks
                         subscriber.callback(**kwargs)
+
+        if not namespace.startswith(_NOTIFY_NAMESPACE_ROOT) and (
+            self.notify_on_emit or self.notify_on_emit_all
+        ):
+            self.emit(namespace=BROKER_ON_EMIT, using=namespace)
 
     async def emit_async(self, namespace: str, **kwargs: Any) -> None:
         """
@@ -312,8 +349,10 @@ class Broker(ModuleType):
             EmitArgumentError: If provided kwargs don't match subscriber
                 signatures.
         Note:
-            This method calls both sync and async callbacks. Sync callbacks are
+            -This method calls both sync and async callbacks. Sync callbacks are
             executed normally, async callbacks are awaited.
+            -Emits a notify event after args have been sent to subscribers.
+            Notify emits the used namespace.
         """
         self._validate_emit_args(namespace, kwargs)
 
@@ -327,6 +366,11 @@ class Broker(ModuleType):
                         await subscriber.callback(**kwargs)
                     else:
                         subscriber.callback(**kwargs)
+
+        if not namespace.startswith(_NOTIFY_NAMESPACE_ROOT) and (
+            self.notify_on_emit_async or self.notify_on_emit_all
+        ):
+            self.emit(namespace=BROKER_ON_EMIT_ASYNC, using=namespace)
 
     @staticmethod
     def _matches(event_namespace: str, subscriber_namespace: str) -> bool:
@@ -345,10 +389,43 @@ class Broker(ModuleType):
 
         # Wildcard match - subscriber wants all events under a root
         if subscriber_namespace.endswith(".*"):
+            # Although not strictly necessary to remove . and *, doing so adds
+            # slightly more validity to the check.
             root = subscriber_namespace[:-2]
             return event_namespace.startswith(root + ".")
 
         return False
+
+    def set_flag_sates(
+        self,
+        on_subscribe: bool = False,
+        on_unsubscribe: bool = False,
+        on_emit: bool = False,
+        on_emit_async: bool = False,
+        on_emit_all: bool = False,
+        on_new_namespace: bool = False,
+        on_del_namespace: bool = False,
+    ) -> None:
+        """
+        Set the notification flags on or off for each type of broker activity.
+        The broker can be configured through any of the following:
+
+        Args:
+            on_subscribe:    	if True, get notified whenever register_subscriber() is called;
+            on_unsubscribe:  	if True, get notified whenever unregister_subscriber() is called;
+            on_emit:			if True, get notified whenever emit() is called;
+            on_emit_async:		if True, get notified when emit_async() is called;
+            on_emit_all:		if True, get notified when emit() or emit_async() is called.
+            on_new_namespace: 	if True, get notified whenever a new namespace is created;
+            on_del_namespace:	if True, get notified whenever a namespace is "deleted";
+        """
+        self.notify_on_subscribe = on_subscribe
+        self.notify_on_unsubscribe = on_unsubscribe
+        self.notify_on_emit = on_emit
+        self.notify_on_emit_async = on_emit_async
+        self.notify_on_emit_all = on_emit_all
+        self.notify_on_new_namespace = on_new_namespace
+        self.notify_on_del_namespace = on_del_namespace
 
 
 # This is here to protect the _SUBSCRIBERS dict, creating a protective closure.
@@ -391,3 +468,16 @@ async def emit_async(namespace: str, **kwargs: Any) -> None:
 # noinspection PyUnusedLocal
 def subscribe(namespace: str, priority: int = 0) -> CALLBACK:
     """See docstring for subscribe_ above..."""
+
+
+# noinspection PyUnusedLocal
+def set_flag_sates(
+    on_subscribe: bool = False,
+    on_unsubscribe: bool = False,
+    on_emit: bool = False,
+    on_emit_async: bool = False,
+    on_emit_all: bool = False,
+    on_new_namespace: bool = False,
+    on_del_namespace: bool = False,
+) -> None:
+    """See docstring above..."""

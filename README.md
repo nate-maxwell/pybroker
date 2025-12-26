@@ -5,9 +5,10 @@ Supports sync and async events.
 
 ## Namespaces
 
-End-points can subscribe to hierarchical namespaces using dot notation like
-`system.io.file_opened` or wildcard namespaces like `system.io.*`.
-
+End-points can subscribe to namespaces using dot notation like
+`system.io.file_opened` or wildcard namespace subscriptions for specific levels
+downwards like `system.io.*`.
+ 
 ## Priorities
 
 Subscriptions can add a priority integer that will dictate the subscriber
