@@ -34,6 +34,27 @@ subscribers, or an event is emitted using different keywords than subscribers
 are expecting, an explicit exception is raised. First subscribers set the
 expectation and following subscribers + emitters are validated.
 
+## Broker Event Notification
+
+Actions within the broker itself can be subscribed to, including:
+* Subscriber addition
+* Subscriber removal
+* Synchronous event emitting
+* Asynchronous event emitting
+* All event emitting
+* Namespace creation
+* Namespace deletion
+
+This is easily achieved using broker constants like so:
+```python
+@broker.subscribe(broker.BROKER_ON_SUBSCRIBER_ADDED)
+def on_subscriber_added(using: str) -> None:
+    print(f'New subscriber to namespace: {using}')
+
+# --or--
+
+broker.register_subscriber(broker.BROKER_ON_SUBSCRIBER_ADDED, on_subscriber_added)
+```
 
 # Example
 
