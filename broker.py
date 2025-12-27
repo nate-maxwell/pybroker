@@ -71,7 +71,7 @@ _SUBSCRIBERS: dict[str, list[Subscriber]] = {}
 The broker's record of each namespace to subscribers.
 
 This is kept outside of the replaced module class to create a protected
-closure around the event topic:subscriber structure.
+closure around the event namespace:subscriber structure.
 """
 
 _NAMESPACE_SIGNATURES: dict[str, Optional[set[str]]] = {}
@@ -491,9 +491,10 @@ class Broker(ModuleType):
         for namespace in keys:
             subscribers_info = []
             for sub in _SUBSCRIBERS[namespace]:
-                callback = sub.callback  # Get live callback (or None if collected)
+                # Get live callback (or None if collected)
+                callback = sub.callback
 
-                if callback is None:  # Dead reference
+                if callback is None:
                     info = "<dead reference>"
 
                 elif hasattr(callback, "__self__"):
