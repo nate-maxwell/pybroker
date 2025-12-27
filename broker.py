@@ -10,6 +10,7 @@ validate correct calls during CI/CD.
 
 import asyncio
 import inspect
+import json
 import sys
 import weakref
 from dataclasses import dataclass
@@ -481,6 +482,47 @@ class Broker(ModuleType):
         self.notify_on_new_namespace = on_new_namespace
         self.notify_on_del_namespace = on_del_namespace
 
+    @staticmethod
+    def to_string() -> str:
+        """Returns a string representation of the broker."""
+        keys = sorted(_SUBSCRIBERS.keys())
+        data = {}
+
+        for namespace in keys:
+            subscribers_info = []
+            for sub in _SUBSCRIBERS[namespace]:
+                callback = sub.callback  # Get live callback (or None if collected)
+
+                if callback is None:  # Dead reference
+                    info = "<dead reference>"
+
+                elif hasattr(callback, "__self__"):
+                    obj = callback.__self__
+                    class_name = obj.__class__.__name__
+                    method_name = callback.__name__
+                    info = f"{class_name}.{method_name}"
+
+                elif hasattr(callback, "__qualname__"):
+                    # Regular function, static method, or class method
+                    module = getattr(callback, "__module__", "<unknown>")
+                    qualname = callback.__qualname__
+                    info = f"{module}.{qualname}"
+
+                else:
+                    # Fallback for unusual callables
+                    info = str(callback)
+
+                # Priority and async info
+                priority_str = (
+                    f" [priority={sub.priority}]" if sub.priority != 0 else ""
+                )
+                async_str = " [async]" if sub.is_async else ""
+                subscribers_info.append(f"{info}{priority_str}{async_str}")
+
+            data[namespace] = subscribers_info
+
+        return json.dumps(data, indent=4)
+
 
 # This is here to protect the _SUBSCRIBERS dict, creating a protective closure.
 custom_module = Broker(sys.modules[__name__].__name__)
@@ -535,4 +577,8 @@ def set_flag_sates(
     on_new_namespace: bool = False,
     on_del_namespace: bool = False,
 ) -> None:
+    """See docstring above..."""
+
+
+def to_string() -> str:
     """See docstring above..."""
