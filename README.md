@@ -39,6 +39,7 @@ expectation and following subscribers + emitters are validated.
 Actions within the broker itself can be subscribed to, including:
 * Subscriber addition
 * Subscriber removal
+* Subscriber deletion from GC
 * Synchronous event emitting
 * Asynchronous event emitting
 * All event emitting
@@ -55,6 +56,8 @@ def on_subscriber_added(using: str) -> None:
 
 broker.register_subscriber(broker.BROKER_ON_SUBSCRIBER_ADDED, on_subscriber_added)
 ```
+* Note that this decorator does not work with instance bound class methods. It
+works with regular functions or static methods.
 
 # Example
 
