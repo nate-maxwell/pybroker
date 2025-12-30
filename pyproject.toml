@@ -2,7 +2,7 @@
 requires = ["setuptools"]
 
 [tool.setuptools]
-packages = ["broker"]
+packages = ["broker.py"]
 
 [project]
 name = "Broker"
